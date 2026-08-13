@@ -1,0 +1,17 @@
+services:
+  boundary:
+    image: ghcr.io/osgeo/gdal@sha256:2f735873e76eaab9d422e5c72562399fe8ea5d5dc33c6e860ec38d1ceaaf64a5
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./data:/data
+    command:
+      - ogr2ogr
+      - -f
+      - GPKG
+      - /data/official-india-boundary.gpkg
+      - /data/OUTLINE_OF_INDIA.shp
+      - -t_srs
+      - EPSG:4326
+      - -nln
+      - india
+      - -makevalid
