@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "sources": {
+    "osm": {
+      "dataset": "OpenStreetMap India extract",
+      "snapshot": "2026-08-12",
+      "url": "https://download.geofabrik.de/asia/india-260812.osm.pbf",
+      "path": "sources/osm/india-260812.osm.pbf",
+      "md5": "2fde095b0510cbe5c62024cf302cb764",
+      "license": "ODbL-1.0",
+      "attribution": "OpenStreetMap contributors"
+    },
+    "planetiler": {
+      "version": "0.10.2",
+      "url": "https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar",
+      "path": "planetiler/planetiler.jar",
+      "sha256": "f310bd0413e2e4512b27f4046d418664e8e1d3bf31603c2a70e23de06c167e4d"
+    },
+    "indiaTerrain": {
+      "inventory": "generated from MAP_INDIA_BOUNDARY",
+      "demUrlTemplate": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM.tif",
+      "worldCoverUrlTemplate": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{lat}{lon}_Map.tif"
+    },
+    "glyphs": {
+      "dataset": "OpenFreeMap Noto Sans glyph PBF",
+      "urlTemplate": "https://tiles.openfreemap.org/fonts/{font}/{range}.pbf",
+      "fonts": ["Noto Sans Regular", "Noto Sans Bold"],
+      "license": "SIL-OFL-1.1"
+    },
+    "gdal": {
+      "image": "ghcr.io/osgeo/gdal:ubuntu-small-latest",
+      "digest": "sha256:2f735873e76eaab9d422e5c72562399fe8ea5d5dc33c6e860ec38d1ceaaf64a5"
+    },
+    "pmtilesCli": {
+      "version": "1.31.2",
+      "image": "protomaps/go-pmtiles:v1.31.2",
+      "digest": "sha256:06574f01f55a78f78f887bc7ebf729a5c093c0d6e17d9876300cfcb0758b59d3"
+    },
+    "osmium": {
+      "image": "stefda/osmium-tool:latest",
+      "digest": "sha256:d2321d0e926f77ead7547b4b35f5cf98d9fd74043673cecc4fc2bb7cce06ff63"
+    },
+    "boundaries": {"status": "policy-required"}
+  }
+}

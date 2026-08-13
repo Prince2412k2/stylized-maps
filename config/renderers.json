@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "renderers": {
+    "sanandreas": {
+      "label": "Grand Theft Auto: San Andreas",
+      "status": "ready",
+      "model": "vector-first",
+      "requiredProducts": ["core/vector.pmtiles"]
+    },
+    "nfs": {
+      "label": "Need for Speed: Payback",
+      "status": "ready",
+      "model": "vector-first",
+      "requiredProducts": ["core/vector.pmtiles"]
+    },
+    "rdr": {
+      "label": "Red Dead Redemption 2",
+      "status": "production-pipeline",
+      "model": "vector-plus-terrain",
+      "requiredProducts": ["core/vector.pmtiles", "rdr/contours.pmtiles", "rdr/terrain.pmtiles"],
+      "scope": "official India boundary"
+    },
+    "elden": {
+      "label": "Elden Ring",
+      "status": "production-pipeline",
+      "model": "raster-hybrid",
+      "requiredProducts": ["core/vector.pmtiles", "elden/base.pmtiles"],
+      "scope": "official India boundary"
+    }
+  }
+}

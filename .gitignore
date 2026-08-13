@@ -1,0 +1,44 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Downloaded geospatial inputs and generated assets
+data/
+public/data/
+public/maps/
+*.pmtiles
+*.mbtiles
+*.tif
+*.tiff
+
+# Downloaded build tools
+planetiler/*.jar
+
+# Visual references and local captures
+docs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+JjehuSe
+
+# Superseded tracer and planning material
+PRD.md
+POC.md
+DATA_SOURCES.md
+config/regions/mumbai*.json
+pipeline/*/contract.json
+pipeline/renderers/*/contract.json
+scripts/build-elden-raster
+scripts/build-rdr-terrain
+scripts/build-tracer-renderers
+scripts/download-tracer-data
+scripts/publish-tracer-release
+scripts/verify-release
+
+# Python and local runtime files
+__pycache__/
+*.py[cod]
+*.log
+*.part
+.DS_Store

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_pbf="${MAP_OSM_SOURCE:?MAP_OSM_SOURCE is required}"
+asset_root="${MAP_ASSET_ROOT:?MAP_ASSET_ROOT is required}"
+planetiler="${MAP_PLANETILER_JAR:?MAP_PLANETILER_JAR is required}"
+classes="/tmp/opencode/map-planetiler-classes"
+next_archive="${MAP_VECTOR_OUTPUT:?MAP_VECTOR_OUTPUT is required}"
+
+test -f "$source_pbf" || { printf 'Missing %s. Run the asset acquisition stage first.\n' "$source_pbf" >&2; exit 1; }
+test -f "$planetiler" || { printf 'Missing %s. Run the asset acquisition stage first.\n' "$planetiler" >&2; exit 1; }
+
+trap 'rm -f "$next_archive"' EXIT
+mkdir -p "/tmp/opencode" "$(dirname "$next_archive")"
+rm -rf "$classes"
+mkdir -p "$classes"
+
+docker run --rm \
+  --cpus 4 \
+  --memory 16g \
+  --memory-swap 18g \
+  --volume "$root:/workspace" \
+  --volume "$asset_root:/assets" \
+  --volume "$classes:/classes" \
+  --workdir /workspace \
+  --env JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:--Xmx24g}" \
+  --env MAP_OSM_SOURCE="/assets/${source_pbf#$asset_root/}" \
+  --env MAP_VECTOR_OUTPUT="/assets/${next_archive#$asset_root/}" \
+  eclipse-temurin:22-jdk \
+  sh -c 'javac -proc:none -cp /assets/planetiler/planetiler.jar -d /classes planetiler/*.java && java -cp /assets/planetiler/planetiler.jar:/classes IndiaPoc --force'
+
+trap - EXIT
+printf 'Built India vector product %s\n' "$next_archive"

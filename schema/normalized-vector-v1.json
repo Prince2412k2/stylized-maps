@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "normalized-vector-v1",
+  "title": "Normalized geographic core v1",
+  "layers": {
+    "water": {"geometry": ["Polygon"], "fields": {}},
+    "waterways": {"geometry": ["LineString"], "fields": {"class": "string"}},
+    "landcover": {"geometry": ["Polygon"], "fields": {"class": "string"}},
+    "landuse": {"geometry": ["Polygon"], "fields": {"class": "string"}},
+    "roads": {"geometry": ["LineString"], "fields": {"class": "string", "name": "string"}},
+    "places": {"geometry": ["Point"], "fields": {"class": "string", "name": "string", "name:en": "string"}},
+    "pois": {
+      "geometry": ["Point"],
+      "fields": {
+        "category": "string", "subcategory": "string", "name": "string", "name:en": "string",
+        "brand": "string", "operator": "string", "opening_hours": "string", "phone": "string",
+        "website": "string", "wheelchair": "string"
+      }
+    }
+  },
+  "reservedLayers": ["railways", "boundaries", "buildings", "parks"]
+}

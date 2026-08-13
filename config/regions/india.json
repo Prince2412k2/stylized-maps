@@ -1,0 +1,11 @@
+{
+  "id": "india",
+  "label": "India",
+  "bounds": [68.0, 6.0, 98.0, 38.0],
+  "center": [82.0, 22.5],
+  "sourceZoom": {"min": 4, "max": 14},
+  "displayZoom": {"initial": 4.5, "min": 4, "max": 18},
+  "nativeRasterZoom": {"rdr": 12, "elden": 13},
+  "buildProfile": {"cpuCores": 4, "memoryGiB": 18, "storageGiB": 100, "workers": 1},
+  "requiredFreeGiB": 80
+}

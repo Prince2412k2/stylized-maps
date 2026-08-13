@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#cbc09e" />
+    <title>India Illustrated Map POC</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="map" aria-label="Interactive illustrated map of India"></div>
+      <header class="masthead">
+        <p class="eyebrow">Illustrated India / proof 01</p>
+        <h1>India</h1>
+      </header>
+      <aside class="readout" aria-live="polite">
+        <span id="source-label">Visual sandbox</span>
+        <strong id="zoom-label">z 9.4</strong>
+      </aside>
+      <fieldset class="renderer-picker" aria-label="Map renderer">
+        <legend>Renderer</legend>
+        <div id="renderer-options"></div>
+      </fieldset>
+      <section class="route-panel" aria-labelledby="route-title">
+        <div class="route-heading">
+          <div>
+            <p class="eyebrow">Travel test</p>
+            <h2 id="route-title">Plan a route</h2>
+          </div>
+          <button id="route-reset" type="button" hidden>Reset</button>
+        </div>
+        <p id="route-status">Choose two points on the map.</p>
+        <button id="route-start" class="route-action" type="button">Place start</button>
+        <div id="route-summary" hidden>
+          <div class="route-metrics"><strong id="route-time"></strong><span id="route-distance"></span></div>
+          <ol id="route-steps"></ol>
+        </div>
+      </section>
+      <div class="grain" aria-hidden="true"></div>
+      <div id="error" class="error" role="alert" hidden></div>
+    </main>
+    <script type="module" src="/web/src/main.ts"></script>
+  </body>
+</html>

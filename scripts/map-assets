@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if test "$#" -eq 0; then
+  set -- status
+fi
+exec python3 "$root/pipeline/build_assets.py" "$@"
