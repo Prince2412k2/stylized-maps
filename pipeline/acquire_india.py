@@ -119,7 +119,8 @@ def main() -> None:
     lock = json.loads(args.lock.read_text(encoding="utf-8"))["sources"]
     west, south, east, north = args.bounds
     boundary = json.loads(args.boundary.read_text(encoding="utf-8"))
-    rings = [ring for feature in boundary["features"] for ring in geometry_rings(feature["geometry"])]
+    features = boundary["features"] if boundary["type"] == "FeatureCollection" else [boundary]
+    rings = [ring for feature in features for ring in geometry_rings(feature["geometry"])]
 
     fixed = (
         (lock["osm"]["url"], args.root / lock["osm"]["path"], ("md5", lock["osm"]["md5"])),

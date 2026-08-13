@@ -250,6 +250,11 @@ class Pipeline:
         source_asset = f"/assets/{source.relative_to(self.asset_root)}"
         self.command("preflight", self.docker(GDAL_IMAGE, ["ogr2ogr", "-f", "GPKG", f"/assets/{self.boundary.relative_to(self.asset_root)}", source_asset, "-t_srs", "EPSG:4326", "-nln", "india", "-makevalid"]))
         self.command("preflight", self.docker(GDAL_IMAGE, ["ogr2ogr", "-f", "GeoJSON", f"/assets/{self.boundary_geojson.relative_to(self.asset_root)}", f"/assets/{self.boundary.relative_to(self.asset_root)}", "-lco", "RFC7946=YES"]))
+        boundary_geojson = json.loads(self.boundary_geojson.read_text(encoding="utf-8"))
+        features = boundary_geojson.get("features", [])
+        if len(features) != 1:
+            raise RuntimeError(f"official boundary must contain exactly one feature, received {len(features)}")
+        self.boundary_geojson.write_text(json.dumps(features[0], separators=(",", ":")) + "\n", encoding="utf-8")
         self.event("preflight-passed", freeBytes=available, boundarySha256=sha256(self.boundary))
 
     def bounds(self) -> list[float]:
@@ -275,7 +280,7 @@ class Pipeline:
         source = self.asset_root / "sources/osm/india-260812.osm.pbf"
         command = self.docker(OSMIUM_IMAGE, [
             "osmium", "extract", "--strategy=complete_ways", "--polygon", f"/assets/{self.boundary_geojson.relative_to(self.asset_root)}",
-            "--output", f"/assets/{output.relative_to(self.asset_root)}", f"/assets/{source.relative_to(self.asset_root)}",
+            "--overwrite", "--progress", "--output", f"/assets/{output.relative_to(self.asset_root)}", f"/assets/{source.relative_to(self.asset_root)}",
         ])
         self.command("vector", command)
 
