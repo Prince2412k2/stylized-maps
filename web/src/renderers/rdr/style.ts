@@ -3,7 +3,7 @@ import type {ReleaseCatalog} from "../../map/catalog";
 import {nfsStyle} from "../nfs/style";
 
 export function rdrStyle(catalog: ReleaseCatalog): StyleSpecification {
-  if (!catalog.products.rdrContours || !catalog.products.rdrTerrain) {
+  if (!catalog.products.rdrTerrain) {
     throw new Error(catalog.renderers.rdr.reason ?? "Frontier terrain products are unavailable.");
   }
 
@@ -11,32 +11,18 @@ export function rdrStyle(catalog: ReleaseCatalog): StyleSpecification {
   const layers = base.layers
     .filter((layer) => !["open-ground", "urban-ground", "grass", "wood", "wetland"].includes(layer.id))
     .map(frontierLayer);
-  const roadsIndex = layers.findIndex((layer) => layer.id === "minor-roads-casing");
   layers.splice(1, 0, {
     id: "rdr-terrain",
     type: "raster",
     source: "rdr-terrain",
     paint: {"raster-opacity": 1, "raster-fade-duration": 0, "raster-resampling": "linear"}
   });
-  layers.splice(roadsIndex + 1, 0, {
-    id: "rdr-contours",
-    type: "line",
-    source: "rdr-contours",
-    "source-layer": "contours",
-    minzoom: 10,
-    paint: {
-      "line-color": "#65553d",
-      "line-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.2, 13, 0.52],
-      "line-width": ["case", ["==", ["%", ["get", "elevation"], 50], 0], 1.15, 0.5]
-    }
-  });
 
   return {
     ...base,
     sources: {
       ...base.sources,
-      "rdr-terrain": {type: "raster", url: `pmtiles://${catalog.products.rdrTerrain}?release=${catalog.releaseId}`, tileSize: 256, attribution: "© Copernicus DEM 2021 · © ESA WorldCover project 2021"},
-      "rdr-contours": {type: "vector", url: `pmtiles://${catalog.products.rdrContours}?release=${catalog.releaseId}`}
+      "rdr-terrain": {type: "raster", url: `pmtiles://${catalog.products.rdrTerrain}?release=${catalog.releaseId}`, tileSize: 256, attribution: "© Copernicus DEM 2021 · © ESA WorldCover project 2021"}
     },
     layers
   };

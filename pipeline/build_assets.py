@@ -21,7 +21,7 @@ PMTILES_IMAGE = "protomaps/go-pmtiles@sha256:06574f01f55a78f78f887bc7ebf729a5c09
 OSMIUM_IMAGE = "stefda/osmium-tool@sha256:d2321d0e926f77ead7547b4b35f5cf98d9fd74043673cecc4fc2bb7cce06ff63"
 STAGES = (
     ("preflight", 1), ("acquire", 8), ("mosaics", 2), ("vector", 14),
-    ("rdr-raster", 15), ("rdr-contours", 12), ("elden-raster", 43), ("package", 4), ("cleanup", 1),
+    ("rdr-raster", 15), ("elden-raster", 55), ("package", 4), ("cleanup", 1),
 )
 
 
@@ -84,7 +84,10 @@ class Pipeline:
     @classmethod
     def create(cls) -> "Pipeline":
         asset_root, boundary = settings()
-        return cls(asset_root, boundary, f"india-{fingerprint(boundary)}")
+        build_id = os.environ.get("MAP_BUILD_ID", f"india-{fingerprint(boundary)}")
+        if not build_id.startswith("india-") or "/" in build_id:
+            raise SystemExit("MAP_BUILD_ID must use the form india-<id>")
+        return cls(asset_root, boundary, build_id)
 
     @property
     def runtime(self) -> pathlib.Path:
@@ -194,6 +197,7 @@ class Pipeline:
                 return
             self.work.mkdir(parents=True, exist_ok=True)
             (self.work / "stages").mkdir(exist_ok=True)
+            shutil.rmtree(self.work / "scratch/contours", ignore_errors=True)
             atomic_json(self.status, {
                 "schemaVersion": 1, "buildId": self.build_id, "pid": os.getpid(), "state": "starting",
                 "stage": "preflight", "progress": 0, "startedAt": now(), "updatedAt": now(),
@@ -211,12 +215,10 @@ class Pipeline:
             self.stage("vector", [vector], lambda: self.build_vector(clipped_osm, vector))
             rdr = self.work / "rdr/terrain.mbtiles"
             self.stage("rdr-raster", [rdr], lambda: self.build_raster("rdr", rdr, 12, dem_vrt, landcover_vrt))
-            contours = self.work / "rdr/contours.pmtiles"
-            self.stage("rdr-contours", [contours], lambda: self.build_contours(contours, dem_vrt))
             elden = self.work / "elden/base.mbtiles"
             self.stage("elden-raster", [elden], lambda: self.build_raster("elden", elden, 13, dem_vrt, landcover_vrt))
             catalog = self.output / "web/maps/current.json"
-            self.stage("package", [catalog], lambda: self.package(vector, rdr, contours, elden))
+            self.stage("package", [catalog], lambda: self.package(vector, rdr, elden))
             cleanup_marker = self.output / "cleanup.json"
             self.stage("cleanup", [cleanup_marker], lambda: self.cleanup(cleanup_marker))
             self.update(state="completed", stage="complete", progress=100, completedAt=now(), webRoot=str(self.output / "web"))
@@ -310,23 +312,11 @@ class Pipeline:
         overviews = ["2", "4", "8", "16", "32"] if renderer == "elden" else ["2", "4", "8", "16"]
         self.command(f"{renderer}-raster", self.docker(GDAL_IMAGE, ["gdaladdo", "-r", "average", f"/assets/{output.relative_to(self.asset_root)}", *overviews]))
 
-    def build_contours(self, output: pathlib.Path, dem: pathlib.Path) -> None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        scratch = f"/assets/work/{self.build_id}/scratch/contours"
-        bounds = " ".join(map(str, self.bounds()))
-        shell = f"""mkdir -p {scratch}
-gdalwarp -overwrite -cutline /assets/{self.boundary.relative_to(self.asset_root)} -crop_to_cutline -t_srs EPSG:3857 -tr 38.2185141426 38.2185141426 -tap -r bilinear -dstnodata 0 /assets/{dem.relative_to(self.asset_root)} {scratch}/dem.tif
-gdal_contour -i 20 -a elevation -f GPKG {scratch}/contours.gpkg {scratch}/dem.tif
-ogr2ogr -f MBTiles {scratch}/contours.mbtiles {scratch}/contours.gpkg -dsco MINZOOM=4 -dsco MAXZOOM=13 -lco NAME=contours
-"""
-        self.command("rdr-contours", self.docker(GDAL_IMAGE, ["sh", "-ceu", shell]))
-        self.convert(self.work / "scratch/contours/contours.mbtiles", output)
-
     def convert(self, source: pathlib.Path, output: pathlib.Path) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         self.command("package", self.docker(PMTILES_IMAGE, ["convert", f"/assets/{source.relative_to(self.asset_root)}", f"/assets/{output.relative_to(self.asset_root)}"]))
 
-    def package(self, vector: pathlib.Path, rdr_mbtiles: pathlib.Path, contours: pathlib.Path, elden_mbtiles: pathlib.Path) -> None:
+    def package(self, vector: pathlib.Path, rdr_mbtiles: pathlib.Path, elden_mbtiles: pathlib.Path) -> None:
         release = self.output / "web/maps/releases" / self.build_id
         stage = self.output / f".{self.build_id}.staging"
         shutil.rmtree(stage, ignore_errors=True)
@@ -339,7 +329,6 @@ ogr2ogr -f MBTiles {scratch}/contours.mbtiles {scratch}/contours.gpkg -dsco MINZ
         self.convert(elden_mbtiles, elden)
         rdr_mbtiles.unlink()
         elden_mbtiles.unlink()
-        shutil.move(contours, stage / "rdr/contours.pmtiles")
         products = {}
         for path in sorted(stage.rglob("*.pmtiles")):
             products[path.relative_to(stage).as_posix()] = {"sha256": sha256(path), "bytes": path.stat().st_size}
@@ -359,7 +348,7 @@ ogr2ogr -f MBTiles {scratch}/contours.mbtiles {scratch}/contours.gpkg -dsco MINZ
         atomic_json(self.output / "web/maps/current.json", {
             "schemaVersion": 1, "releaseId": self.build_id,
             "region": {"id": "india", "label": "India", "bounds": bounds, "center": [82.0, 22.5], "zoom": {"initial": 4.5, "min": 4, "max": 18}},
-            "products": {"coreVector": f"{base}/core/vector.pmtiles", "rdrContours": f"{base}/rdr/contours.pmtiles", "rdrTerrain": f"{base}/rdr/terrain.pmtiles", "eldenBase": f"{base}/elden/base.pmtiles"},
+            "products": {"coreVector": f"{base}/core/vector.pmtiles", "rdrTerrain": f"{base}/rdr/terrain.pmtiles", "eldenBase": f"{base}/elden/base.pmtiles"},
             "renderers": {
                 "sanandreas": {"label": "Grand Theft Auto: San Andreas", "status": "ready", "model": "vector-first"},
                 "nfs": {"label": "Need for Speed: Payback", "status": "ready", "model": "vector-first"},

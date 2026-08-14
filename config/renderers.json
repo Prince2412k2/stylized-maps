@@ -17,7 +17,7 @@
       "label": "Red Dead Redemption 2",
       "status": "production-pipeline",
       "model": "vector-plus-terrain",
-      "requiredProducts": ["core/vector.pmtiles", "rdr/contours.pmtiles", "rdr/terrain.pmtiles"],
+      "requiredProducts": ["core/vector.pmtiles", "rdr/terrain.pmtiles"],
       "scope": "official India boundary"
     },
     "elden": {
