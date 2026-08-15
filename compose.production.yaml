@@ -14,21 +14,25 @@ services:
       retries: 3
     security_opt:
       - no-new-privileges:true
+    expose:
+      - "3000"
 
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
     environment:
-      DOMAIN: "${DOMAIN:-localhost}"
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      # HTTP only: the existing Caddy on caddy-proxy terminates TLS and
+      # reverse-proxies to this service. ":80" makes the embedded Caddy
+      # listen on 0.0.0.0:80 without attempting ACME/HTTPS.
+      DOMAIN: "${DOMAIN:-:80}"
+    expose:
+      - "80"
     volumes:
       - "${MAP_WEB_ROOT:?MAP_WEB_ROOT must point to the generated web root}:/srv/assets:ro"
-      - caddy_data:/data
-      - caddy_config:/config
+    networks:
+      - default
+      - caddy-proxy
     depends_on:
       api:
         condition: service_healthy
@@ -36,6 +40,6 @@ services:
     security_opt:
       - no-new-privileges:true
 
-volumes:
-  caddy_data:
-  caddy_config:
+networks:
+  caddy-proxy:
+    external: true
