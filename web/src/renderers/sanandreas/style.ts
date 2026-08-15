@@ -8,7 +8,9 @@ export function sanAndreasStyle(catalog: ReleaseCatalog): StyleSpecification {
 }
 
 function sanAndreasLayer(layer: LayerSpecification): LayerSpecification {
-  if (layer.id === "land" && layer.type === "background") return {...layer, paint: {"background-color": "#7f963d"}};
+  if (layer.id === "sea" && layer.type === "background") return {...layer, paint: {"background-color": "#4d7fa3"}};
+  if (layer.id === "land" && layer.type === "fill") return {...layer, paint: {"fill-color": "#7f963d"}};
+  if (layer.id === "coastline" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "#f0eee9", "line-opacity": 0.85}};
   if (layer.id === "open-ground" && layer.type === "fill") return {...layer, paint: {...layer.paint, "fill-color": "#80983e", "fill-opacity": 0.95}};
   if (layer.id === "urban-ground" && layer.type === "fill") return {...layer, paint: {...layer.paint, "fill-color": "#aaa9a8", "fill-opacity": 1}};
   if (layer.id === "grass" && layer.type === "fill") return {...layer, paint: {...layer.paint, "fill-color": "#769036", "fill-opacity": 1}};

@@ -1,0 +1,34 @@
+openapi: 3.1.0
+info:
+  title: Illustrated India API
+  version: 1.0.0
+paths:
+  /api/v1/health:
+    get:
+      responses:
+        "200":
+          description: Service is available
+  /api/v1/search:
+    get:
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string, minLength: 2, maxLength: 120}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 8, default: 6}}
+        - {name: proximity, in: query, schema: {type: string, description: "lng,lat within India"}}
+      responses:
+        "200": {description: Bounded autocomplete results}
+        "400": {description: Invalid query}
+        "429": {description: Rate limit exceeded}
+        "502": {description: Provider returned an invalid response}
+        "503": {description: Provider unavailable or not configured}
+  /api/v1/routes/driving:
+    get:
+      parameters:
+        - {name: start, in: query, required: true, schema: {type: string, description: "lng,lat within India"}}
+        - {name: end, in: query, required: true, schema: {type: string, description: "lng,lat within India"}}
+      responses:
+        "200": {description: Driving route with geometry and instructions}
+        "400": {description: Invalid coordinates}
+        "404": {description: No route found}
+        "429": {description: Rate limit exceeded}
+        "502": {description: Provider returned an invalid response}
+        "503": {description: Provider unavailable or not configured}

@@ -8,9 +8,11 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import dataclass
 from typing import Callable
 
@@ -19,6 +21,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 GDAL_IMAGE = "ghcr.io/osgeo/gdal@sha256:2f735873e76eaab9d422e5c72562399fe8ea5d5dc33c6e860ec38d1ceaaf64a5"
 PMTILES_IMAGE = "protomaps/go-pmtiles@sha256:06574f01f55a78f78f887bc7ebf729a5c093c0d6e17d9876300cfcb0758b59d3"
 OSMIUM_IMAGE = "stefda/osmium-tool@sha256:d2321d0e926f77ead7547b4b35f5cf98d9fd74043673cecc4fc2bb7cce06ff63"
+DISPLAY_MIN_ZOOM = 4
+BOUNDARY_URL = "https://www.surveyofindia.gov.in/documents/OUTLINE_OF_INDIA_SHP.zip"
+BOUNDARY_MIRROR = "https://raw.githubusercontent.com/yashveeeeeeer/india-geodata/08ecb3fdf3122b1eb1b1bc149cd7bd6418223588/data/survey-of-india/outline-maps/india-outline-vector"
 STAGES = (
     ("preflight", 1), ("acquire", 8), ("mosaics", 2), ("vector", 14),
     ("rdr-raster", 15), ("elden-raster", 55), ("package", 4), ("cleanup", 1),
@@ -42,6 +47,133 @@ def sha256(path: pathlib.Path) -> str:
         while block := source.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class LocalResources:
+    total_cpus: int
+    reserved_cpus: int
+    cpu_limit: int
+    total_memory_gib: float
+    reserved_memory_gib: float
+    memory_limit_gib: int
+
+
+def local_resources() -> LocalResources:
+    total_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    values: dict[str, int] = {}
+    for line in pathlib.Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        name, value = line.split(":", 1)
+        values[name] = int(value.split()[0]) * 1024
+    total_memory = values["MemTotal"]
+    available_memory = values["MemAvailable"]
+    reserved_memory = int(total_memory * 0.2 + 0.999)
+    usable_memory = min(int(total_memory * 0.8), available_memory - reserved_memory)
+    memory_limit_gib = usable_memory // 1024**3
+    if memory_limit_gib < 4:
+        raise SystemExit("not enough available RAM to run the pipeline while reserving 20% for the system")
+    reserved_cpus = min(5, max(1, total_cpus - 1))
+    return LocalResources(
+        total_cpus=total_cpus,
+        reserved_cpus=reserved_cpus,
+        cpu_limit=total_cpus - reserved_cpus,
+        total_memory_gib=total_memory / 1024**3,
+        reserved_memory_gib=reserved_memory / 1024**3,
+        memory_limit_gib=memory_limit_gib,
+    )
+
+
+def configure_local_environment(detect_resources: bool = True) -> None:
+    has_explicit_paths = bool(os.environ.get("MAP_ASSET_ROOT") and os.environ.get("MAP_INDIA_BOUNDARY"))
+    if has_explicit_paths and os.environ.get("MAP_LOCAL_AUTO") != "1":
+        return
+    asset_root = pathlib.Path(os.environ.get("MAP_ASSET_ROOT", pathlib.Path.home() / "StylizedMapsAssets")).expanduser().resolve()
+    os.environ.setdefault("MAP_ASSET_ROOT", str(asset_root))
+    if not os.environ.get("MAP_INDIA_BOUNDARY"):
+        os.environ["MAP_INDIA_BOUNDARY"] = str(asset_root / "sources/boundary/india.gpkg")
+    os.environ["MAP_LOCAL_AUTO"] = "1"
+    if not detect_resources:
+        return
+    resources = local_resources()
+    os.environ.update({
+        "MAP_CPU_LIMIT": str(resources.cpu_limit),
+        "MAP_MEMORY_LIMIT_GB": str(resources.memory_limit_gib),
+        "MAP_MEMORY_SWAP_LIMIT_GB": str(resources.memory_limit_gib),
+        "MAP_DOWNLOAD_WORKERS": str(min(12, resources.total_cpus)),
+        "MAP_RASTER_WORKERS": str(resources.total_cpus),
+    })
+
+
+def prepare_local_boundary() -> None:
+    boundary = pathlib.Path(os.environ["MAP_INDIA_BOUNDARY"])
+    boundary_root = boundary.parent
+    marker = boundary_root / "normalized.json"
+    if boundary.exists() and marker.exists() and json.loads(marker.read_text(encoding="utf-8")).get("schemaVersion") == 2:
+        return
+    boundary_root.mkdir(parents=True, exist_ok=True)
+    archive = boundary_root / "OUTLINE_OF_INDIA_SHP.zip"
+    source_root = boundary_root / "source"
+    if archive.exists() and not zipfile.is_zipfile(archive):
+        archive.unlink()
+    existing_shapes = list(source_root.rglob("*.shp")) if source_root.exists() else []
+    source_complete = len(existing_shapes) == 1 and all(existing_shapes[0].with_suffix(f".{suffix}").exists() for suffix in ("dbf", "prj", "shx"))
+    if not archive.exists() and not source_complete:
+        partial = archive.with_suffix(".zip.part")
+        command = ["curl", "--fail", "--location", "--output", str(partial), BOUNDARY_URL]
+        try:
+            subprocess.run(command, check=True)
+        except subprocess.CalledProcessError:
+            partial.unlink(missing_ok=True)
+            try:
+                subprocess.run(["curl", "--insecure", *command[1:]], check=True)
+            except subprocess.CalledProcessError:
+                partial.unlink(missing_ok=True)
+                source_root.mkdir(parents=True, exist_ok=True)
+                for suffix in ("cpg", "dbf", "prj", "shp", "shx"):
+                    target = source_root / f"polymap15m_area.{suffix}"
+                    partial_target = target.with_suffix(target.suffix + ".part")
+                    subprocess.run([
+                        "curl", "--fail", "--location", "--output", str(partial_target),
+                        f"{BOUNDARY_MIRROR}/polymap15m_area.{suffix}",
+                    ], check=True)
+                    partial_target.replace(target)
+                atomic_json(boundary_root / "source.json", {
+                    "publisher": "Survey of India",
+                    "origin": BOUNDARY_URL,
+                    "mirror": BOUNDARY_MIRROR,
+                })
+            else:
+                partial.replace(archive)
+        else:
+            partial.replace(archive)
+    if archive.exists() and not source_complete:
+        shutil.rmtree(source_root, ignore_errors=True)
+        resolved_source_root = source_root.resolve()
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                target = (source_root / member.filename).resolve()
+                if resolved_source_root not in target.parents and target != resolved_source_root:
+                    raise RuntimeError(f"invalid path in Survey of India archive: {member.filename}")
+            bundle.extractall(source_root)
+    shapes = list(source_root.rglob("*.shp"))
+    if len(shapes) != 1:
+        raise RuntimeError("Survey of India boundary source did not contain one shapefile")
+    relative_shape = shapes[0].relative_to(boundary_root)
+    memory = os.environ["MAP_MEMORY_LIMIT_GB"]
+    memory_swap = os.environ.get("MAP_MEMORY_SWAP_LIMIT_GB", memory)
+    next_boundary = boundary.with_suffix(".next.gpkg")
+    next_boundary.unlink(missing_ok=True)
+    subprocess.run([
+        "docker", "run", "--rm", "--cpus", os.environ["MAP_CPU_LIMIT"],
+        "--memory", f"{memory}g", "--memory-swap", f"{memory_swap}g",
+        "--user", f"{os.getuid()}:{os.getgid()}", "--volume", f"{boundary_root}:/boundary",
+        GDAL_IMAGE, "ogr2ogr", "-f", "GPKG", f"/boundary/{next_boundary.name}",
+        f"/boundary/{relative_shape.as_posix()}", "-dialect", "sqlite",
+        "-sql", f'SELECT ST_CollectionExtract(ST_Union(geometry), 3) AS geometry FROM "{shapes[0].stem}"',
+        "-t_srs", "EPSG:4326", "-nln", "india", "-nlt", "MULTIPOLYGON", "-makevalid",
+    ], check=True)
+    next_boundary.replace(boundary)
+    atomic_json(marker, {"schemaVersion": 2, "geometryType": "MultiPolygon"})
 
 
 def settings() -> tuple[pathlib.Path, pathlib.Path]:
@@ -113,6 +245,17 @@ class Pipeline:
     def status(self) -> pathlib.Path:
         return self.runtime / "status.json"
 
+    def resource_limits(self) -> tuple[str, int, int]:
+        configured = self.runtime / "resources.json"
+        if configured.exists():
+            values = json.loads(configured.read_text(encoding="utf-8"))
+            return str(values["cpuLimit"]), int(values["memoryLimitGiB"]), int(values["rasterWorkers"])
+        return (
+            os.environ.get("MAP_CPU_LIMIT", "4"),
+            int(os.environ.get("MAP_MEMORY_LIMIT_GB", "16")),
+            int(os.environ.get("MAP_RASTER_WORKERS", "1")),
+        )
+
     def event(self, event: str, **fields: object) -> None:
         self.runtime.mkdir(parents=True, exist_ok=True)
         record = {"ts": now(), "event": event, "buildId": self.build_id, **fields}
@@ -165,8 +308,12 @@ class Pipeline:
         self.event("stage-completed", stage=name, elapsedSeconds=round(time.monotonic() - started, 2))
 
     def docker(self, image: str, arguments: list[str]) -> list[str]:
+        cpus, memory, _ = self.resource_limits()
+        has_live_limits = (self.runtime / "resources.json").exists()
+        memory_swap = memory if has_live_limits or os.environ.get("MAP_LOCAL_AUTO") == "1" else int(os.environ.get("MAP_MEMORY_SWAP_LIMIT_GB", "18"))
         return [
-            "docker", "run", "--rm", "--cpus", "4", "--memory", "16g", "--memory-swap", "18g",
+            "docker", "run", "--rm", "--cpus", cpus, "--memory", f"{memory}g", "--memory-swap", f"{memory_swap}g",
+            "--label", f"map.pipeline={self.build_id}",
             "--user", f"{os.getuid()}:{os.getgid()}",
             "--volume", f"{ROOT}:/workspace", "--volume", f"{self.asset_root}:/assets",
             "--workdir", "/workspace", image, *arguments,
@@ -198,11 +345,21 @@ class Pipeline:
             self.work.mkdir(parents=True, exist_ok=True)
             (self.work / "stages").mkdir(exist_ok=True)
             shutil.rmtree(self.work / "scratch/contours", ignore_errors=True)
+            cpu_limit, memory_limit, raster_workers = self.resource_limits()
             atomic_json(self.status, {
                 "schemaVersion": 1, "buildId": self.build_id, "pid": os.getpid(), "state": "starting",
                 "stage": "preflight", "progress": 0, "startedAt": now(), "updatedAt": now(),
+                "resources": {
+                    "cpuLimit": float(cpu_limit),
+                    "memoryLimitGiB": memory_limit,
+                    "rasterWorkers": raster_workers,
+                },
             })
             self.event("pipeline-started")
+            if self.boundary_geojson.exists():
+                existing_boundary = json.loads(self.boundary_geojson.read_text(encoding="utf-8"))
+                if existing_boundary.get("geometry", {}).get("type") not in {"Polygon", "MultiPolygon"}:
+                    (self.work / "stages/preflight.json").unlink(missing_ok=True)
             self.stage("preflight", [self.boundary, self.boundary_geojson], self.preflight)
             inventory = self.asset_root / "sources/inventory.json"
             self.stage("acquire", [inventory], self.acquire)
@@ -250,12 +407,16 @@ class Pipeline:
         source = self.boundary.parent / f"source{self.boundary_input.suffix}"
         shutil.copy2(self.boundary_input, source)
         source_asset = f"/assets/{source.relative_to(self.asset_root)}"
+        self.boundary.unlink(missing_ok=True)
+        self.boundary_geojson.unlink(missing_ok=True)
         self.command("preflight", self.docker(GDAL_IMAGE, ["ogr2ogr", "-f", "GPKG", f"/assets/{self.boundary.relative_to(self.asset_root)}", source_asset, "-t_srs", "EPSG:4326", "-nln", "india", "-makevalid"]))
-        self.command("preflight", self.docker(GDAL_IMAGE, ["ogr2ogr", "-f", "GeoJSON", f"/assets/{self.boundary_geojson.relative_to(self.asset_root)}", f"/assets/{self.boundary.relative_to(self.asset_root)}", "-lco", "RFC7946=YES"]))
+        self.command("preflight", self.docker(GDAL_IMAGE, ["ogr2ogr", "-f", "GeoJSON", f"/assets/{self.boundary_geojson.relative_to(self.asset_root)}", f"/assets/{self.boundary.relative_to(self.asset_root)}"]))
         boundary_geojson = json.loads(self.boundary_geojson.read_text(encoding="utf-8"))
         features = boundary_geojson.get("features", [])
         if len(features) != 1:
             raise RuntimeError(f"official boundary must contain exactly one feature, received {len(features)}")
+        if features[0].get("geometry", {}).get("type") not in {"Polygon", "MultiPolygon"}:
+            raise RuntimeError("official boundary must contain Polygon or MultiPolygon geometry")
         self.boundary_geojson.write_text(json.dumps(features[0], separators=(",", ":")) + "\n", encoding="utf-8")
         self.event("preflight-passed", freeBytes=available, boundarySha256=sha256(self.boundary))
 
@@ -270,6 +431,7 @@ class Pipeline:
             sys.executable, "pipeline/acquire_india.py", "--root", str(self.asset_root),
             "--lock", str(ROOT / "config/sources.lock.json"), "--bounds", *map(str, self.bounds()),
             "--boundary", str(self.boundary_geojson), "--min-free-gib", "5",
+            "--workers", os.environ.get("MAP_DOWNLOAD_WORKERS", "1"),
         ], track=True)
 
     def mosaics(self) -> None:
@@ -288,28 +450,44 @@ class Pipeline:
 
     def build_vector(self, source: pathlib.Path, output: pathlib.Path) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
+        cpu_limit, memory_limit, _ = self.resource_limits()
+        has_live_limits = (self.runtime / "resources.json").exists()
+        memory_swap = memory_limit if has_live_limits or os.environ.get("MAP_LOCAL_AUTO") == "1" else int(os.environ.get("MAP_MEMORY_SWAP_LIMIT_GB", "18"))
         self.command("vector", ["scripts/build-vector"], {
             "MAP_ASSET_ROOT": str(self.asset_root),
             "MAP_OSM_SOURCE": str(source),
             "MAP_PLANETILER_JAR": str(self.asset_root / "planetiler/planetiler.jar"),
             "MAP_VECTOR_OUTPUT": str(output),
-            "JAVA_TOOL_OPTIONS": os.environ.get("JAVA_TOOL_OPTIONS", "-Xmx12g"),
+            "MAP_BUILD_ID": self.build_id,
+            "MAP_CPU_LIMIT": cpu_limit,
+            "MAP_MEMORY_LIMIT_GB": str(memory_limit),
+            "MAP_MEMORY_SWAP_LIMIT_GB": str(memory_swap),
+            "JAVA_TOOL_OPTIONS": f"-Xmx{max(2, memory_limit - 4)}g -XX:ActiveProcessorCount={cpu_limit}",
         })
 
     def build_raster(self, renderer: str, output: pathlib.Path, zoom: int, dem: pathlib.Path, landcover: pathlib.Path) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
+        cpu_limit, memory_limit, raster_workers = self.resource_limits()
+        if renderer == "elden":
+            raster_workers = min(raster_workers, max(1, memory_limit - 3))
+        self.update(resources={
+            "cpuLimit": float(cpu_limit),
+            "memoryLimitGiB": memory_limit,
+            "rasterWorkers": raster_workers,
+        })
         arguments = [
             "python3", "pipeline/renderers/render_india.py", "--renderer", renderer,
             "--output", f"/assets/{output.relative_to(self.asset_root)}",
             "--work", f"/assets/work/{self.build_id}/scratch/{renderer}",
             "--bounds", *map(str, self.bounds()), "--zoom", str(zoom), "--metatile", "4",
+            "--workers", str(raster_workers),
             "--dem", f"/assets/{dem.relative_to(self.asset_root)}",
             "--landcover", f"/assets/{landcover.relative_to(self.asset_root)}",
             "--boundary", f"/assets/{self.boundary.relative_to(self.asset_root)}",
             "--min-free-gib", "5",
         ]
         self.command(f"{renderer}-raster", self.docker(GDAL_IMAGE, arguments), track=True)
-        overviews = ["2", "4", "8", "16", "32"] if renderer == "elden" else ["2", "4", "8", "16"]
+        overviews = [str(1 << level) for level in range(1, zoom - DISPLAY_MIN_ZOOM + 1)]
         self.command(f"{renderer}-raster", self.docker(GDAL_IMAGE, ["gdaladdo", "-r", "average", f"/assets/{output.relative_to(self.asset_root)}", *overviews]))
 
     def convert(self, source: pathlib.Path, output: pathlib.Path) -> None:
@@ -329,8 +507,9 @@ class Pipeline:
         self.convert(elden_mbtiles, elden)
         rdr_mbtiles.unlink()
         elden_mbtiles.unlink()
+        shutil.copyfile(self.boundary_geojson, stage / "core/boundary.geojson")
         products = {}
-        for path in sorted(stage.rglob("*.pmtiles")):
+        for path in sorted(path for path in stage.rglob("*") if path.is_file()):
             products[path.relative_to(stage).as_posix()] = {"sha256": sha256(path), "bytes": path.stat().st_size}
         bounds = self.bounds()
         atomic_json(stage / "artifact-manifest.json", {
@@ -347,8 +526,11 @@ class Pipeline:
         base = f"/maps/releases/{self.build_id}"
         atomic_json(self.output / "web/maps/current.json", {
             "schemaVersion": 1, "releaseId": self.build_id,
-            "region": {"id": "india", "label": "India", "bounds": bounds, "center": [82.0, 22.5], "zoom": {"initial": 4.5, "min": 4, "max": 18}},
-            "products": {"coreVector": f"{base}/core/vector.pmtiles", "rdrTerrain": f"{base}/rdr/terrain.pmtiles", "eldenBase": f"{base}/elden/base.pmtiles"},
+            "region": {"id": "india", "label": "India", "bounds": bounds, "center": [82.0, 22.5], "zoom": {"initial": 4.5, "min": DISPLAY_MIN_ZOOM, "max": 18}},
+            "products": {
+                "coreVector": f"{base}/core/vector.pmtiles", "rdrTerrain": f"{base}/rdr/terrain.pmtiles",
+                "eldenBase": f"{base}/elden/base.pmtiles", "boundary": f"{base}/core/boundary.geojson",
+            },
             "renderers": {
                 "sanandreas": {"label": "Grand Theft Auto: San Andreas", "status": "ready", "model": "vector-first"},
                 "nfs": {"label": "Need for Speed: Payback", "status": "ready", "model": "vector-first"},
@@ -389,8 +571,19 @@ class Pipeline:
 
 
 def runtime_from_environment() -> pathlib.Path:
-    asset_root, _ = settings()
+    asset_root = pathlib.Path(os.environ.get("MAP_ASSET_ROOT", pathlib.Path.home() / "StylizedMapsAssets")).expanduser().resolve()
     return asset_root / "runtime"
+
+
+def configured_resources() -> dict[str, int | float]:
+    path = runtime_from_environment() / "resources.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "cpuLimit": float(os.environ.get("MAP_CPU_LIMIT", "4")),
+        "memoryLimitGiB": int(os.environ.get("MAP_MEMORY_LIMIT_GB", "16")),
+        "rasterWorkers": int(os.environ.get("MAP_RASTER_WORKERS", "1")),
+    }
 
 
 def print_status() -> None:
@@ -413,6 +606,9 @@ def print_status() -> None:
         print(f"error: {status['message']}")
     if status.get("webRoot"):
         print(f"web root: {status['webRoot']}")
+    resources = status.get("resources") or configured_resources()
+    if resources:
+        print(f"resources: {resources['cpuLimit']:g} CPUs, {resources['memoryLimitGiB']} GiB, {resources['rasterWorkers']} raster workers")
 
 
 def verify(path: pathlib.Path | None) -> None:
@@ -431,6 +627,7 @@ def verify(path: pathlib.Path | None) -> None:
 
 
 def start() -> None:
+    configure_local_environment()
     runtime = runtime_from_environment()
     runtime.mkdir(parents=True, exist_ok=True)
     lock = (runtime / "pipeline.lock").open("a+")
@@ -440,26 +637,159 @@ def start() -> None:
         raise SystemExit("India asset pipeline is already running")
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
+    status_path = runtime / "status.json"
+    if status_path.exists():
+        state = json.loads(status_path.read_text(encoding="utf-8"))
+        try:
+            os.kill(int(state["pid"]), 0)
+            raise SystemExit("India asset pipeline is already running or paused")
+        except (ProcessLookupError, PermissionError):
+            pass
     log = (runtime / "pipeline.log").open("a", encoding="utf-8")
     process = subprocess.Popen([sys.executable, __file__, "run"], cwd=ROOT, env=os.environ, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     log.close()
+    resources = configured_resources()
+    atomic_json(status_path, {
+        "schemaVersion": 1, "buildId": "pending", "pid": process.pid, "state": "running",
+        "stage": "bootstrap", "progress": 0, "stageCompleted": 0, "stageTotal": 1,
+        "startedAt": now(), "updatedAt": now(),
+        "resources": resources,
+    })
     print(f"Started India production build PID {process.pid}")
     print("Progress: scripts/map-assets status")
+    print("Pause: scripts/map-assets pause")
+    print("Resources: scripts/map-assets resources")
     print(f"Log: {runtime / 'pipeline.log'}")
+
+
+def update_runtime(**fields: object) -> dict[str, object]:
+    path = runtime_from_environment() / "status.json"
+    if not path.exists():
+        raise SystemExit("No India asset pipeline has run")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state.update(fields, updatedAt=now())
+    atomic_json(path, state)
+    return state
+
+
+def docker_containers(build_id: str) -> list[str]:
+    if build_id == "pending":
+        return []
+    output = subprocess.check_output([
+        "docker", "ps", "--filter", f"label=map.pipeline={build_id}", "--format", "{{.ID}}",
+    ], text=True)
+    return output.split()
+
+
+def set_resources(mode: str | None, memory: int | None) -> None:
+    current = configured_resources()
+    if mode is None:
+        print(f"{current['cpuLimit']:g} CPUs, {current['memoryLimitGiB']} GiB RAM")
+        print("Set: scripts/map-assets resources auto|full|<cpus> <memory-gib>")
+        return
+    detected = local_resources()
+    if mode == "auto":
+        cpu_limit = detected.cpu_limit
+        memory_limit = detected.memory_limit_gib
+    elif mode == "full":
+        cpu_limit = detected.total_cpus
+        memory_limit = max(4, int(detected.total_memory_gib) - 2)
+    else:
+        try:
+            cpu_limit = int(mode)
+        except ValueError as cause:
+            raise SystemExit("resource profile must be auto, full, or an integer CPU count") from cause
+        if memory is None:
+            raise SystemExit("manual resource limits require CPU count and memory in GiB")
+        memory_limit = memory
+    if not 1 <= cpu_limit <= detected.total_cpus:
+        raise SystemExit(f"CPU limit must be between 1 and {detected.total_cpus}")
+    max_memory = int(detected.total_memory_gib) - 1
+    if not 4 <= memory_limit <= max_memory:
+        raise SystemExit(f"memory limit must be between 4 and {max_memory} GiB")
+    values: dict[str, int | float] = {
+        "cpuLimit": cpu_limit,
+        "memoryLimitGiB": memory_limit,
+        "rasterWorkers": detected.total_cpus,
+    }
+    status_path = runtime_from_environment() / "status.json"
+    containers: list[str] = []
+    if status_path.exists():
+        state = json.loads(status_path.read_text(encoding="utf-8"))
+        containers = docker_containers(str(state.get("buildId", "pending")))
+    if containers:
+        subprocess.run([
+            "docker", "update", "--cpus", str(cpu_limit), "--memory", f"{memory_limit}g",
+            "--memory-swap", f"{memory_limit}g", *containers,
+        ], check=True)
+    atomic_json(runtime_from_environment() / "resources.json", values)
+    if status_path.exists():
+        update_runtime(resources=values)
+    print(f"Pipeline resources set to {cpu_limit} CPUs and {memory_limit} GiB RAM.")
+    if containers:
+        print(f"Updated {len(containers)} running container(s) without restarting the build.")
+
+
+def pause() -> None:
+    state = update_runtime(state="paused", message="paused by user")
+    pid = int(state["pid"])
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError as cause:
+        raise SystemExit("Pipeline process is not running; use resume to restart from checkpoints") from cause
+    containers = docker_containers(str(state["buildId"]))
+    if containers:
+        subprocess.run(["docker", "pause", *containers], check=True)
+    os.killpg(pid, signal.SIGSTOP)
+    print("Paused India build. Run scripts/map-assets resume to continue.")
+
+
+def resume() -> None:
+    path = runtime_from_environment() / "status.json"
+    if path.exists():
+        state = json.loads(path.read_text(encoding="utf-8"))
+        pid = int(state["pid"])
+        try:
+            os.kill(pid, 0)
+            if state.get("state") != "paused":
+                raise SystemExit("India asset pipeline is already running")
+            containers = docker_containers(str(state["buildId"]))
+            if containers:
+                subprocess.run(["docker", "unpause", *containers], check=True)
+            os.killpg(pid, signal.SIGCONT)
+            update_runtime(state="running", message=None)
+            print("Resumed India build.")
+            return
+        except ProcessLookupError:
+            pass
+        build_id = str(state.get("buildId", ""))
+        if build_id.startswith("india-") and build_id != "india-pending":
+            os.environ["MAP_BUILD_ID"] = build_id
+    start()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("run", "start", "status", "verify"))
-    parser.add_argument("path", nargs="?", type=pathlib.Path)
+    parser.add_argument("command", choices=("run", "start", "pause", "resume", "status", "resources", "verify"), nargs="?", default="status")
+    parser.add_argument("argument", nargs="?")
+    parser.add_argument("memory", nargs="?", type=int)
     args = parser.parse_args()
+    configure_local_environment(detect_resources=args.command in {"run", "start"})
     if args.command == "status":
         print_status()
     elif args.command == "start":
         start()
+    elif args.command == "pause":
+        pause()
+    elif args.command == "resume":
+        resume()
+    elif args.command == "resources":
+        set_resources(args.argument, args.memory)
     elif args.command == "verify":
-        verify(args.path)
+        verify(pathlib.Path(args.argument) if args.argument else None)
     else:
+        if os.environ.get("MAP_LOCAL_AUTO") == "1":
+            prepare_local_boundary()
         Pipeline.create().execute()
 
 

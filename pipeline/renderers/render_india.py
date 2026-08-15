@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import io
 import math
 import os
@@ -107,8 +108,8 @@ def boundary_geometry(path: str) -> ogr.Geometry:
 
 
 def intersects_boundary(boundary: ogr.Geometry, x: int, y: int, width: int, height: int, zoom: int) -> bool:
-    west, south, _, north = tile_bounds(x, y + height - 1, zoom)
-    _, _, east, _ = tile_bounds(x + width - 1, y, zoom)
+    west, south, _, _ = tile_bounds(x, y + height - 1, zoom)
+    _, _, east, north = tile_bounds(x + width - 1, y, zoom)
     ring = ogr.Geometry(ogr.wkbLinearRing)
     for point in ((west, south), (east, south), (east, north), (west, north), (west, south)):
         ring.AddPoint(*point)
@@ -129,8 +130,8 @@ def render_metatile(
     height: int,
     work: pathlib.Path,
 ) -> list[tuple[int, int, int, bytes]]:
-    west, south, _, north = tile_bounds(start_x, start_y + height - 1, zoom)
-    _, _, east, _ = tile_bounds(start_x + width - 1, start_y, zoom)
+    west, south, _, _ = tile_bounds(start_x, start_y + height - 1, zoom)
+    _, _, east, north = tile_bounds(start_x + width - 1, start_y, zoom)
     scale = 2 if renderer == "elden" else 1
     halo = 32
     resolution = 2 * ORIGIN / (TILE_SIZE * (1 << zoom))
@@ -171,6 +172,19 @@ def render_metatile(
     return tiles
 
 
+def render_job(arguments: tuple) -> tuple[str, list[tuple[int, int, int, bytes]]]:
+    renderer, dem, landcover, boundary, zoom, start_x, start_y, width, height, work = arguments
+    job = f"{zoom}/{start_x}/{start_y}/{width}/{height}"
+    job_work = pathlib.Path(work) / f"{zoom}-{start_x}-{start_y}"
+    shutil.rmtree(job_work, ignore_errors=True)
+    job_work.mkdir(parents=True, exist_ok=True)
+    try:
+        tiles = render_metatile(renderer, dem, landcover, boundary, zoom, start_x, start_y, width, height, job_work)
+        return job, tiles
+    finally:
+        shutil.rmtree(job_work, ignore_errors=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--renderer", choices=("rdr", "elden"), required=True)
@@ -183,6 +197,7 @@ def main() -> None:
     parser.add_argument("--landcover", required=True)
     parser.add_argument("--boundary", required=True)
     parser.add_argument("--min-free-gib", type=float, default=5)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
 
     west, south, east, north = args.bounds
@@ -197,19 +212,28 @@ def main() -> None:
     ]
     connection = create_mbtiles(args.output, f"{args.renderer} India", tuple(args.bounds), args.zoom)
     args.work.mkdir(parents=True, exist_ok=True)
+    pending = []
     completed = 0
     for start_x, start_y, width, height in jobs:
         if shutil.disk_usage(args.output.parent).free < args.min_free_gib * 1024**3:
             raise RuntimeError(f"render stopped before exhausting disk: less than {args.min_free_gib:g} GiB free")
         job = f"{args.zoom}/{start_x}/{start_y}/{width}/{height}"
         existing = connection.execute("SELECT 1 FROM completed_jobs WHERE job=?", (job,)).fetchone()
-        if existing is None:
-            tiles = render_metatile(args.renderer, args.dem, args.landcover, args.boundary, args.zoom, start_x, start_y, width, height, args.work)
+        if existing is not None:
+            completed += 1
+            print(f"PROGRESS {completed} {len(jobs)}", flush=True)
+            continue
+        pending.append((args.renderer, args.dem, args.landcover, args.boundary, args.zoom, start_x, start_y, width, height, str(args.work)))
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(render_job, job): job for job in pending}
+        for future in concurrent.futures.as_completed(futures):
+            job, tiles = future.result()
             connection.executemany("INSERT OR REPLACE INTO tiles VALUES(?, ?, ?, ?)", tiles)
             connection.execute("INSERT INTO completed_jobs(job) VALUES(?)", (job,))
             connection.commit()
-        completed += 1
-        print(f"PROGRESS {completed} {len(jobs)}", flush=True)
+            completed += 1
+            print(f"PROGRESS {completed} {len(jobs)}", flush=True)
     connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     connection.execute("VACUUM")
     connection.close()

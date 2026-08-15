@@ -5,7 +5,9 @@ dist/
 # Downloaded geospatial inputs and generated assets
 data/
 public/data/
-public/maps/
+public/maps
+public/maps.*
+public/fonts
 *.pmtiles
 *.mbtiles
 *.tif
@@ -35,6 +37,9 @@ scripts/build-tracer-renderers
 scripts/download-tracer-data
 scripts/publish-tracer-release
 scripts/verify-release
+
+# Local secrets
+.env
 
 # Python and local runtime files
 __pycache__/

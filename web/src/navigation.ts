@@ -1,31 +1,17 @@
 import * as maplibregl from "maplibre-gl";
 import type {GeoJSONSource, MapGeoJSONFeature} from "maplibre-gl";
+import {fetchDrivingRoute, type Coordinate, type DrivingRoute} from "./api";
+import type {CompassController} from "./compass";
 
-type Coordinate = [number, number];
-
-type RouteStep = {
-  distance: number;
-  name: string;
-  maneuver: {
-    type: string;
-    modifier?: string;
-    exit?: number;
-  };
+export type NavigationController = {
+  setStart(point: Coordinate): void;
+  setDestination(point: Coordinate): void;
+  reset(): void;
 };
 
-type RouteResponse = {
-  code: string;
-  message?: string;
-  routes: Array<{
-    distance: number;
-    duration: number;
-    geometry: GeoJSON.LineString;
-    legs: Array<{steps: RouteStep[]}>;
-  }>;
-};
-
-export function setupNavigation(map: maplibregl.Map) {
+export function setupNavigation(map: maplibregl.Map, compass: CompassController): NavigationController {
   const startButton = document.querySelector<HTMLButtonElement>("#route-start")!;
+  const driveButton = document.querySelector<HTMLButtonElement>("#route-drive")!;
   const resetButton = document.querySelector<HTMLButtonElement>("#route-reset")!;
   const status = document.querySelector<HTMLElement>("#route-status")!;
   const summary = document.querySelector<HTMLElement>("#route-summary")!;
@@ -37,120 +23,183 @@ export function setupNavigation(map: maplibregl.Map) {
   let points: Coordinate[] = [];
   let pendingDestination: Coordinate | undefined;
   let routeRequest: AbortController | undefined;
+  let route: DrivingRoute | undefined;
+  let watchId: number | undefined;
+  let positionMarker: maplibregl.Marker | undefined;
+  let previousPosition: Coordinate | undefined;
+  let lastReroute = 0;
 
-  function setPoint(point: Coordinate, index: number) {
+  const routeMaps = [map, compass.map];
+  const setRouteGeometry = (geometry: GeoJSON.Geometry) => {
+    for (const routeMap of routeMaps) {
+      const update = () => (routeMap.getSource("route") as GeoJSONSource | undefined)?.setData({type: "Feature", properties: {}, geometry});
+      routeMap.loaded() ? update() : routeMap.once("load", update);
+    }
+  };
+
+  function setPoint(point: Coordinate, index: number): void {
     points[index] = point;
     markers[index]?.remove();
-    markers[index] = new maplibregl.Marker({className: index === 0 ? "route-marker start" : "route-marker destination"})
-      .setLngLat(point)
-      .addTo(map);
-
+    markers[index] = new maplibregl.Marker({className: index === 0 ? "route-marker start" : "route-marker destination"}).setLngLat(point).addTo(map);
+    syncRouteParams();
     if (points.length === 1) {
       status.textContent = "Now place the destination.";
       startButton.textContent = "Cancel";
       return;
     }
-
     isPlacing = false;
     map.getCanvas().classList.remove("placing-route");
-    startButton.textContent = "Calculating...";
-    startButton.disabled = true;
     void requestRoute(points[0], points[1]);
   }
 
-  async function requestRoute(start: Coordinate, destination: Coordinate) {
-    const coordinates = `${start.join(",")};${destination.join(",")}`;
+  async function requestRoute(start: Coordinate, destination: Coordinate, isReroute = false): Promise<void> {
+    routeRequest?.abort();
     const request = new AbortController();
     routeRequest = request;
-
+    startButton.textContent = "Calculating...";
+    startButton.disabled = true;
     try {
-      const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson&steps=true`, {signal: request.signal});
-      if (!response.ok) {
-        showRouteError(`Routing service returned HTTP ${response.status}.`);
-        return;
-      }
-
-      const routeResponse = await response.json() as RouteResponse;
-      const route = routeResponse.routes[0];
-      if (routeResponse.code !== "Ok" || !route) {
-        showRouteError(routeResponse.message ?? "No driving route was found.");
-        return;
-      }
-
-      (map.getSource("route") as GeoJSONSource).setData({
-        type: "Feature",
-        properties: {},
-        geometry: route.geometry
-      });
-
-      time.textContent = formatDuration(route.duration);
-      distance.textContent = formatDistance(route.distance);
-      steps.replaceChildren(...route.legs.flatMap((leg) => leg.steps.slice(0, 8).map((step) => {
-        const item = document.createElement("li");
-        const instruction = document.createElement("span");
-        const stepDistance = document.createElement("small");
-        instruction.textContent = formatInstruction(step);
-        stepDistance.textContent = formatDistance(step.distance);
-        item.append(instruction, stepDistance);
-        return item;
-      })));
-      status.textContent = "Driving route";
-      summary.hidden = false;
-      resetButton.hidden = false;
-      startButton.hidden = true;
-
-      const bounds = route.geometry.coordinates.reduce(
-        (routeBounds, coordinate) => routeBounds.extend(coordinate as Coordinate),
-        new maplibregl.LngLatBounds(route.geometry.coordinates[0] as Coordinate, route.geometry.coordinates[0] as Coordinate)
-      );
-      const isMobile = window.matchMedia("(max-width: 640px)").matches;
-      map.fitBounds(bounds, {padding: isMobile ? 40 : {top: 90, right: 90, bottom: 120, left: 360}, maxZoom: 14});
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      showRouteError("The routing service could not be reached.");
+      route = await fetchDrivingRoute(start, destination, request.signal);
+      setRouteGeometry(route.geometry);
+      renderRoute(route);
+      if (!isReroute) fitRoute(route.geometry.coordinates);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      showRouteError(cause instanceof Error ? cause.message : "Routing service could not be reached.");
     } finally {
       if (routeRequest === request) routeRequest = undefined;
     }
   }
 
-  function showRouteError(message: string) {
-    status.textContent = message;
-    startButton.textContent = "Try again";
-    startButton.disabled = false;
+  function renderRoute(nextRoute: DrivingRoute): void {
+    time.textContent = formatDuration(nextRoute.durationSeconds);
+    distance.textContent = formatDistance(nextRoute.distanceMeters);
+    steps.replaceChildren(...nextRoute.steps.slice(0, 8).map((step) => {
+      const item = document.createElement("li");
+      const instruction = document.createElement("span");
+      const stepDistance = document.createElement("small");
+      instruction.textContent = step.instruction;
+      stepDistance.textContent = formatDistance(step.distanceMeters);
+      item.append(instruction, stepDistance);
+      return item;
+    }));
+    status.textContent = watchId === undefined ? "Driving route" : "Drive mode active";
+    summary.hidden = false;
     resetButton.hidden = false;
+    startButton.hidden = true;
+    driveButton.hidden = false;
   }
 
-  function resetRoute() {
+  function fitRoute(coordinates: Coordinate[]): void {
+    const bounds = coordinates.reduce((box, coordinate) => box.extend(coordinate), new maplibregl.LngLatBounds(coordinates[0], coordinates[0]));
+    const isMobile = window.matchMedia("(max-width: 640px)").matches;
+    map.fitBounds(bounds, {padding: isMobile ? {top: 180, right: 24, bottom: 160, left: 24} : {top: 90, right: 210, bottom: 120, left: 360}, maxZoom: 14});
+  }
+
+  function showRouteError(message: string): void {
+    status.textContent = message;
+    startButton.textContent = "Try again";
+    startButton.hidden = false;
+    startButton.disabled = false;
+    resetButton.hidden = false;
+    driveButton.hidden = true;
+  }
+
+  function resetRoute(): void {
+    stopDrive();
     routeRequest?.abort();
     routeRequest = undefined;
     isPlacing = false;
     points = [];
+    route = undefined;
     pendingDestination = undefined;
     markers.splice(0).forEach((marker) => marker.remove());
-    (map.getSource("route") as GeoJSONSource).setData({type: "FeatureCollection", features: []});
+    setRouteGeometry({type: "LineString", coordinates: []});
     map.getCanvas().classList.remove("placing-route");
     status.textContent = "Choose two points on the map.";
     startButton.textContent = "Place start";
     startButton.hidden = false;
     startButton.disabled = false;
     resetButton.hidden = true;
+    driveButton.hidden = true;
     summary.hidden = true;
+    syncRouteParams();
+  }
+
+  function startDrive(): void {
+    if (!route || !points[1]) return;
+    if (!navigator.geolocation) {
+      showRouteError("This browser does not provide GPS location.");
+      return;
+    }
+    document.body.classList.add("drive-mode");
+    driveButton.textContent = "Stop drive";
+    status.textContent = "Waiting for GPS...";
+    watchId = navigator.geolocation.watchPosition(updateDrivePosition, (error) => {
+      status.textContent = error.code === error.PERMISSION_DENIED ? "Location permission is required for drive mode." : "GPS position is unavailable.";
+      stopDrive();
+    }, {enableHighAccuracy: true, maximumAge: 1_000, timeout: 15_000});
+  }
+
+  function stopDrive(): void {
+    if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
+    watchId = undefined;
+    previousPosition = undefined;
+    positionMarker?.remove();
+    positionMarker = undefined;
+    document.body.classList.remove("drive-mode");
+    driveButton.textContent = "Start drive";
+    compass.release();
+    map.easeTo({pitch: 0, bearing: 0, duration: 500});
+  }
+
+  function updateDrivePosition(position: GeolocationPosition): void {
+    if (!route || !points[1]) return;
+    const current: Coordinate = [position.coords.longitude, position.coords.latitude];
+    const gpsHeading = position.coords.heading;
+    const heading = gpsHeading !== null && Number.isFinite(gpsHeading) ? gpsHeading : previousPosition ? bearing(previousPosition, current) : map.getBearing();
+    previousPosition = current;
+    positionMarker?.remove();
+    const marker = document.createElement("div");
+    marker.className = "drive-marker";
+    marker.style.setProperty("--heading", `${heading}deg`);
+    positionMarker = new maplibregl.Marker({element: marker, rotationAlignment: "map"}).setLngLat(current).addTo(map);
+    map.easeTo({center: current, bearing: heading, pitch: 55, zoom: Math.max(map.getZoom(), 16), offset: [0, map.getContainer().clientHeight * 0.18], duration: 700});
+    compass.follow(current, heading);
+
+    const nearest = nearestRoutePoint(current, route.geometry.coordinates);
+    const remaining = route.geometry.coordinates.slice(nearest.index);
+    setRouteGeometry({type: "LineString", coordinates: [current, ...remaining]});
+    const instruction = [...route.steps].reverse().find((step) => step.fromIndex <= nearest.index) ?? route.steps[0];
+    status.textContent = instruction?.instruction ?? "Continue on the route";
+    if (distanceBetween(current, points[1]) < 35) {
+      status.textContent = "You have arrived.";
+      stopDrive();
+      return;
+    }
+    if (nearest.distance > 120 && Date.now() - lastReroute > 30_000) {
+      lastReroute = Date.now();
+      void requestRoute(current, points[1], true);
+    }
+  }
+
+  function syncRouteParams(): void {
+    const url = new URL(window.location.href);
+    points[0] ? url.searchParams.set("from", points[0].join(",")) : url.searchParams.delete("from");
+    points[1] ? url.searchParams.set("to", points[1].join(",")) : url.searchParams.delete("to");
+    window.history.replaceState(null, "", url);
   }
 
   startButton.addEventListener("click", () => {
-    if (isPlacing) {
-      resetRoute();
-      return;
-    }
+    if (isPlacing) return resetRoute();
     resetRoute();
     isPlacing = true;
     status.textContent = "Click the map to place the start.";
     startButton.textContent = "Cancel";
     map.getCanvas().classList.add("placing-route");
   });
-
   resetButton.addEventListener("click", resetRoute);
-
+  driveButton.addEventListener("click", () => watchId === undefined ? startDrive() : stopDrive());
   map.on("click", (event) => {
     if (!isPlacing) return;
     setPoint([event.lngLat.lng, event.lngLat.lat], points.length);
@@ -161,109 +210,101 @@ export function setupNavigation(map: maplibregl.Map) {
     }
   });
 
+  const controller: NavigationController = {
+    setStart(point) { resetRoute(); isPlacing = true; setPoint(point, 0); },
+    setDestination(point) {
+      if (points.length === 1) return setPoint(point, 1);
+      resetRoute();
+      isPlacing = true;
+      pendingDestination = point;
+      status.textContent = "Place your starting point.";
+      map.getCanvas().classList.add("placing-route");
+    },
+    reset: resetRoute
+  };
+
+  setupPoiInteractions(map, controller);
+  const params = new URLSearchParams(window.location.search);
+  const sharedStart = parseCoordinate(params.get("from"));
+  const sharedEnd = parseCoordinate(params.get("to"));
+  if (sharedStart && sharedEnd) {
+    setPoint(sharedStart, 0);
+    setPoint(sharedEnd, 1);
+  }
+  return controller;
+}
+
+function setupPoiInteractions(map: maplibregl.Map, navigation: NavigationController): void {
   const poiLayers = ["poi-labels", "poi-fuel", "poi-shops", "poi-other"];
   map.on("mouseenter", poiLayers, () => { map.getCanvas().style.cursor = "pointer"; });
   map.on("mouseleave", poiLayers, () => { map.getCanvas().style.cursor = ""; });
   map.on("click", poiLayers, (event) => {
-    if (isPlacing) return;
     const feature = event.features?.[0];
     if (!feature || feature.geometry.type !== "Point") return;
-    showPoi(feature, feature.geometry.coordinates as Coordinate);
+    showPoi(map, navigation, feature, feature.geometry.coordinates as Coordinate);
   });
-
-  function showPoi(feature: MapGeoJSONFeature, coordinate: Coordinate) {
-    const properties = feature.properties;
-    const card = document.createElement("div");
-    const title = properties["name:en"] || properties.name || properties.brand || formatPoiType(properties.subcategory || properties.category);
-    card.className = "poi-card";
-    const category = document.createElement("small");
-    const heading = document.createElement("strong");
-    category.textContent = formatPoiType(properties.subcategory || properties.category);
-    heading.textContent = title;
-    card.append(category, heading);
-    if (properties.opening_hours) {
-      const openingHours = document.createElement("span");
-      openingHours.textContent = properties.opening_hours;
-      card.append(openingHours);
-    }
-    const details = [properties.operator && `Operated by ${properties.operator}`, properties.phone, properties.wheelchair === "yes" && "Wheelchair accessible"].filter(Boolean);
-    if (details.length) {
-      const metadata = document.createElement("small");
-      metadata.className = "poi-meta";
-      metadata.textContent = details.join(" · ");
-      card.append(metadata);
-    }
-    const actions = document.createElement("div");
-    const from = document.createElement("button");
-    const to = document.createElement("button");
-    from.textContent = "Start here";
-    to.textContent = "Go here";
-    actions.append(from, to);
-    card.append(actions);
-
-    const popup = new maplibregl.Popup({offset: 12, closeButton: true}).setLngLat(coordinate).setDOMContent(card).addTo(map);
-    from.addEventListener("click", () => {
-      resetRoute();
-      isPlacing = true;
-      setPoint(coordinate, 0);
-      popup.remove();
-    });
-    to.addEventListener("click", () => {
-      if (points.length !== 1) {
-        resetRoute();
-        isPlacing = true;
-        pendingDestination = coordinate;
-        status.textContent = "Place your starting point.";
-        map.getCanvas().classList.add("placing-route");
-        return;
-      }
-      setPoint(coordinate, 1);
-      popup.remove();
-    });
-  }
 }
 
-function formatInstruction(step: RouteStep) {
-  const {type, modifier, exit} = step.maneuver;
-  const road = step.name ? ` onto ${step.name}` : "";
-
-  if (type === "depart") return `Start${road}`;
-  if (type === "arrive") return "Arrive at your destination";
-  if (type === "turn") return `Turn${modifier ? ` ${modifier}` : ""}${road}`;
-  if (type === "fork") return `Keep${modifier ? ` ${modifier}` : ""}${road}`;
-  if (type === "merge") return `Merge${modifier ? ` ${modifier}` : ""}${road}`;
-  if (type === "roundabout" || type === "rotary") return exit ? `Take exit ${exit}${road}` : `Enter the roundabout${road}`;
-  if (type === "new name" || type === "continue") return `Continue${modifier ? ` ${modifier}` : ""}${road}`;
-
-  const action = type.replaceAll("_", " ");
-  return `${action.charAt(0).toUpperCase()}${action.slice(1)}${modifier ? ` ${modifier}` : ""}${road}`;
+function showPoi(map: maplibregl.Map, navigation: NavigationController, feature: MapGeoJSONFeature, coordinate: Coordinate): void {
+  const properties = feature.properties;
+  const card = document.createElement("div");
+  const category = document.createElement("small");
+  const heading = document.createElement("strong");
+  const actions = document.createElement("div");
+  const from = document.createElement("button");
+  const to = document.createElement("button");
+  card.className = "poi-card";
+  category.textContent = formatPoiType(properties.subcategory || properties.category);
+  heading.textContent = properties["name:en"] || properties.name || properties.brand || category.textContent;
+  from.textContent = "Start here";
+  to.textContent = "Go here";
+  actions.append(from, to);
+  card.append(category, heading, actions);
+  const popup = new maplibregl.Popup({offset: 12}).setLngLat(coordinate).setDOMContent(card).addTo(map);
+  from.addEventListener("click", () => { navigation.setStart(coordinate); popup.remove(); });
+  to.addEventListener("click", () => { navigation.setDestination(coordinate); popup.remove(); });
 }
 
-function formatPoiType(value: string | undefined) {
-  if (!value) return "Place";
-  const labels: Record<string, string> = {
-    fuel: "Petrol pump",
-    charging_station: "Charging station",
-    bus_station: "Bus station",
-    ferry_terminal: "Ferry terminal",
-    place_of_worship: "Place of worship",
-    fast_food: "Fast food",
-    sports_centre: "Sports centre",
-    fire_station: "Fire station",
-    post_office: "Post office",
-    railway: "Rail station",
-    station: "Rail station",
-    halt: "Rail stop"
-  };
-  return labels[value] ?? value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+function nearestRoutePoint(point: Coordinate, route: Coordinate[]): {index: number; distance: number} {
+  let nearest = {index: 0, distance: Number.POSITIVE_INFINITY};
+  route.forEach((candidate, index) => {
+    const distance = distanceBetween(point, candidate);
+    if (distance < nearest.distance) nearest = {index, distance};
+  });
+  return nearest;
 }
 
-function formatDistance(meters: number) {
+function distanceBetween(a: Coordinate, b: Coordinate): number {
+  const latitude = (a[1] + b[1]) * Math.PI / 360;
+  const x = (b[0] - a[0]) * Math.cos(latitude);
+  const y = b[1] - a[1];
+  return Math.hypot(x, y) * 111_320;
+}
+
+function bearing(a: Coordinate, b: Coordinate): number {
+  const startLat = a[1] * Math.PI / 180;
+  const endLat = b[1] * Math.PI / 180;
+  const delta = (b[0] - a[0]) * Math.PI / 180;
+  const y = Math.sin(delta) * Math.cos(endLat);
+  const x = Math.cos(startLat) * Math.sin(endLat) - Math.sin(startLat) * Math.cos(endLat) * Math.cos(delta);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function parseCoordinate(value: string | null): Coordinate | undefined {
+  if (!value) return;
+  const coordinate = value.split(",").map(Number);
+  return coordinate.length === 2 && coordinate.every(Number.isFinite) ? coordinate as Coordinate : undefined;
+}
+
+function formatPoiType(value: string | undefined): string {
+  return value ? value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()) : "Place";
+}
+
+function formatDistance(meters: number): string {
   return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
 }
 
-function formatDuration(seconds: number) {
+function formatDuration(seconds: number): string {
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min`;
-  return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
 }

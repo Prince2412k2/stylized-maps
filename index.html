@@ -2,40 +2,108 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#cbc09e" />
-    <title>India Illustrated Map POC</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0f12" />
+    <meta name="description" content="An illustrated atlas of India rendered in four game worlds, with live navigation." />
+    <title>India — Illustrated Atlas</title>
   </head>
   <body>
     <main id="app">
       <div id="map" aria-label="Interactive illustrated map of India"></div>
-      <header class="masthead">
-        <p class="eyebrow">Illustrated India / proof 01</p>
-        <h1>India</h1>
-      </header>
-      <aside class="readout" aria-live="polite">
-        <span id="source-label">Visual sandbox</span>
-        <strong id="zoom-label">z 9.4</strong>
-      </aside>
-      <fieldset class="renderer-picker" aria-label="Map renderer">
-        <legend>Renderer</legend>
-        <div id="renderer-options"></div>
-      </fieldset>
-      <section class="route-panel" aria-labelledby="route-title">
-        <div class="route-heading">
-          <div>
-            <p class="eyebrow">Travel test</p>
-            <h2 id="route-title">Plan a route</h2>
+
+      <div class="chrome">
+        <header class="masthead">
+          <span class="mark" aria-hidden="true">IN</span>
+          <div class="masthead-copy">
+            <h1>India</h1>
+            <p class="readout chip" aria-live="polite">
+              <span id="source-label">Loading release</span>
+              <span class="dot" aria-hidden="true"></span>
+              <strong id="zoom-label">z 4.5</strong>
+            </p>
           </div>
-          <button id="route-reset" type="button" hidden>Reset</button>
+        </header>
+
+        <section class="search-panel" aria-labelledby="search-label">
+          <label id="search-label" class="chip" for="place-search">Find a place</label>
+          <div class="search-field">
+            <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+              <path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <input id="place-search" type="search" placeholder="City, street, landmark" autocomplete="off"
+                   role="combobox" aria-controls="search-results" aria-expanded="false" />
+            <button id="search-clear" type="button" aria-label="Clear search" hidden>
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+          <p id="search-status" class="chip">Search cities, streets, and landmarks</p>
+          <ul id="search-results" role="listbox" hidden></ul>
+        </section>
+
+        <section class="route-panel" aria-labelledby="route-title">
+          <div class="route-heading">
+            <div>
+              <p class="eyebrow">Journey</p>
+              <h2 id="route-title">Plan a route</h2>
+            </div>
+            <button id="route-reset" type="button" hidden>Reset</button>
+          </div>
+          <p id="route-status">Choose two points on the map.</p>
+          <div class="route-actions">
+            <button id="route-start" class="route-action" type="button">Place start</button>
+            <button id="route-drive" class="route-action drive-action" type="button" hidden>Start drive</button>
+          </div>
+          <div id="route-summary" hidden>
+            <div class="route-metrics">
+              <strong id="route-time"></strong>
+              <span id="route-distance"></span>
+            </div>
+            <ol id="route-steps"></ol>
+          </div>
+        </section>
+
+        <nav class="worldbar" aria-label="Map renderer">
+          <span class="worldbar-label">World</span>
+          <div id="renderer-options"></div>
+        </nav>
+
+        <div class="instruments">
+          <button id="locate" class="instrument locate" type="button" data-state="idle"
+                  aria-pressed="false" aria-label="Show my location">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="4" fill="currentColor" />
+              <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.55" />
+              <path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <span class="instrument-pulse" aria-hidden="true"></span>
+          </button>
+
+          <div class="zoom-pair">
+            <button id="zoom-in" class="instrument" type="button" aria-label="Zoom in">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 6v12M6 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button id="zoom-out" class="instrument" type="button" aria-label="Zoom out">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          <aside class="compass-panel" aria-label="Local map and heading">
+            <span class="compass-north" aria-hidden="true">N</span>
+            <div id="compass-map"></div>
+            <div id="direction-arrow" aria-hidden="true"><i></i></div>
+          </aside>
         </div>
-        <p id="route-status">Choose two points on the map.</p>
-        <button id="route-start" class="route-action" type="button">Place start</button>
-        <div id="route-summary" hidden>
-          <div class="route-metrics"><strong id="route-time"></strong><span id="route-distance"></span></div>
-          <ol id="route-steps"></ol>
-        </div>
-      </section>
+
+        <p id="gps-readout" class="gps-readout" aria-live="polite" hidden></p>
+      </div>
+
       <div class="grain" aria-hidden="true"></div>
       <div id="error" class="error" role="alert" hidden></div>
     </main>

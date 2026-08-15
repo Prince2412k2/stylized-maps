@@ -1,0 +1,50 @@
+{$DOMAIN:localhost} {
+  log {
+    output stdout
+    format json
+  }
+
+  header {
+    -Server
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "geolocation=(self)"
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; worker-src 'self' blob:; script-src 'self'; frame-ancestors 'none'; base-uri 'self';"
+  }
+
+  handle /api/* {
+    reverse_proxy api:3000
+  }
+
+  @catalog path /maps/current.json
+  header @catalog Cache-Control "no-cache"
+
+  @immutable path /maps/releases/* /fonts/* /assets/*
+  header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+  @pmtiles path *.pmtiles
+  header @pmtiles {
+    Accept-Ranges bytes
+    Content-Encoding identity
+  }
+
+  @compressible not path *.pmtiles
+  encode @compressible zstd gzip
+
+  handle /maps/* {
+    root * /srv/assets
+    file_server
+  }
+
+  handle /fonts/* {
+    root * /srv/assets
+    file_server
+  }
+
+  handle {
+    root * /srv/app
+    try_files {path} /index.html
+    file_server
+  }
+}

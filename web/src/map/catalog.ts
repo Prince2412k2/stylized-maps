@@ -18,6 +18,7 @@ export type ReleaseCatalog = {
   };
   products: {
     coreVector: string;
+    boundary: string;
     rdrTerrain?: string;
     eldenBase?: string;
   };

@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if command -v brew >/dev/null 2>&1; then
+  brew_bin="$(command -v brew)"
+else
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  if test -x /opt/homebrew/bin/brew; then
+    brew_bin=/opt/homebrew/bin/brew
+  else
+    brew_bin=/usr/local/bin/brew
+  fi
+fi
+
+export PATH="$(dirname "$brew_bin"):$PATH"
+if ! "$brew_bin" list --versions python@3.12 >/dev/null 2>&1; then
+  "$brew_bin" install python@3.12
+fi
+python_bin="$($brew_bin --prefix python@3.12)/bin/python3.12"
+exec "$python_bin" "$root/pipeline/build_assets_macos.py" "$@"

@@ -5,15 +5,23 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "tsx watch server/index.ts",
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && vite build",
-    "preview": "vite preview"
+    "build:api": "tsc -p server/tsconfig.json",
+    "build": "npm run typecheck && npm run build:api && vite build",
+    "preview": "vite preview",
+    "start:api": "node dist-server/index.js",
+    "test:api": "node --import tsx --test server/*.test.ts"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.2.0",
+    "fastify": "^5.12.0",
     "maplibre-gl": "5.7.3",
     "pmtiles": "^4.3.0"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.9.2",
     "vite": "^7.1.1"
   }

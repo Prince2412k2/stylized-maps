@@ -11,10 +11,12 @@ export function nfsStyle(catalog: ReleaseCatalog): StyleSpecification {
     glyphs: "/fonts/{fontstack}/{range}.pbf",
     sources: {
       core: {type: "vector", url: `pmtiles://${catalog.products.coreVector}?release=${catalog.releaseId}`, attribution: "© OpenStreetMap contributors"},
+      boundary: {type: "geojson", data: catalog.products.boundary, attribution: "Survey of India"},
       route: {type: "geojson", data: {type: "FeatureCollection", features: []}}
     },
     layers: [
-      {id: "land", type: "background", paint: {"background-color": "#211515"}},
+      {id: "sea", type: "background", paint: {"background-color": "#060c10"}},
+      {id: "land", type: "fill", source: "boundary", paint: {"fill-color": "#211515"}},
       {id: "open-ground", type: "fill", source: "core", "source-layer": layers.landcover, filter: ["match", ["get", "class"], ["grass", "farmland", "meadow"], true, false], paint: {"fill-color": "#725534", "fill-opacity": 0.92}},
       {id: "urban-ground", type: "fill", source: "core", "source-layer": layers.landuse, filter: ["==", ["get", "class"], "residential"], paint: {"fill-color": "#241d2d", "fill-opacity": 0.96}},
       {id: "grass", type: "fill", source: "core", "source-layer": layers.landcover, filter: ["match", ["get", "class"], ["grass", "meadow"], true, false], paint: {"fill-color": "#74422f", "fill-opacity": 0.86}},
@@ -22,6 +24,7 @@ export function nfsStyle(catalog: ReleaseCatalog): StyleSpecification {
       {id: "wetland", type: "fill", source: "core", "source-layer": layers.landcover, filter: ["match", ["get", "class"], ["wetland", "scrub"], true, false], paint: {"fill-color": "#214b50", "fill-opacity": 0.9}},
       {id: "water", type: "fill", source: "core", "source-layer": layers.water, paint: {"fill-color": "#073d42", "fill-outline-color": "#176d70"}},
       {id: "waterways", type: "line", source: "core", "source-layer": layers.waterways, paint: {"line-color": "#16868b", "line-width": ["interpolate", ["linear"], ["zoom"], 9, 0.7, 15, 3]}},
+      {id: "coastline", type: "line", source: "boundary", paint: {"line-color": "#17d6c4", "line-opacity": 0.6, "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.8, 10, 1.8]}},
       {id: "minor-roads-casing", type: "line", source: "core", "source-layer": layers.roads, minzoom: 11, filter: minorRoads, layout: {"line-cap": "round", "line-join": "round"}, paint: {"line-color": "#080d12", "line-width": ["interpolate", ["exponential", 1.35], ["zoom"], 11, 1.2, 16, 7]}},
       {id: "minor-roads", type: "line", source: "core", "source-layer": layers.roads, minzoom: 11, filter: minorRoads, layout: {"line-cap": "round", "line-join": "round"}, paint: {"line-color": "#a8a8aa", "line-opacity": 0.78, "line-width": ["interpolate", ["exponential", 1.35], ["zoom"], 11, 0.45, 16, 4]}},
       {id: "major-roads-casing", type: "line", source: "core", "source-layer": layers.roads, filter: majorRoads, layout: {"line-cap": "round", "line-join": "round"}, paint: {"line-color": "#070a0d", "line-width": ["interpolate", ["exponential", 1.3], ["zoom"], 8, 2.8, 12, 7, 16, 17]}},

@@ -11,7 +11,7 @@ export function eldenStyle(catalog: ReleaseCatalog): StyleSpecification {
   const layers = base.layers
     .filter((layer) => !["open-ground", "urban-ground", "grass", "wood", "wetland"].includes(layer.id))
     .map(relicLayer);
-  layers.splice(1, 0, {
+  layers.splice(layers.findIndex((layer) => layer.id === "land") + 1, 0, {
     id: "elden-base",
     type: "raster",
     source: "elden-base",
@@ -29,7 +29,9 @@ export function eldenStyle(catalog: ReleaseCatalog): StyleSpecification {
 }
 
 function relicLayer(layer: LayerSpecification): LayerSpecification {
-  if (layer.id === "land" && layer.type === "background") return {...layer, paint: {"background-color": "#8a7a5c"}};
+  if (layer.id === "sea" && layer.type === "background") return {...layer, paint: {"background-color": "#6f6448"}};
+  if (layer.id === "land" && layer.type === "fill") return {...layer, paint: {"fill-color": "#8a7a5c"}};
+  if (layer.id === "coastline" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "#3c3222", "line-opacity": 0.85}};
   if (layer.id === "water" && layer.type === "fill") return {...layer, paint: {"fill-color": "rgba(82,110,108,0.34)", "fill-outline-color": "#40504d"}};
   if (layer.id === "waterways" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "#536f69", "line-opacity": 0.75}};
   if (layer.id === "minor-roads-casing" && layer.type === "line") return {...layer, minzoom: 13, paint: {...layer.paint, "line-color": "rgba(45,34,24,0.68)", "line-opacity": 0.84, "line-width": ["interpolate", ["exponential", 1.35], ["zoom"], 13, 1.1, 16, 5.4]}};

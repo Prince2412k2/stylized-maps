@@ -8,6 +8,9 @@ import {rdrStyle} from "./renderers/rdr/style";
 import {eldenStyle} from "./renderers/elden/style";
 import {sanAndreasStyle} from "./renderers/sanandreas/style";
 import {setupNavigation} from "./navigation";
+import {setupCompass, type CompassController} from "./compass";
+import {setupSearch} from "./search";
+import {setupLocate, type LocateController} from "./locate";
 import "./styles.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -36,7 +39,17 @@ try {
   style = {version: 8, sources: {}, layers: [{id: "unavailable", type: "background", paint: {"background-color": "#171a1c"}}]};
 }
 
+// MapLibre needs WebGL2. Phones in low-power or lockdown modes can refuse the context,
+// and an unguarded constructor throw leaves a blank page with nothing to act on.
+if (!document.createElement("canvas").getContext("webgl2")) {
+  error.textContent = "This browser cannot start WebGL2, which the map needs. Try another browser, or turn off low-power or lockdown mode.";
+  error.hidden = false;
+}
+
 const [west, south, east, north] = catalog.region.bounds;
+// Sea margin around the country. Without it MapLibre refuses to zoom out past the
+// point where the viewport is taller than the bounds, so the whole of India never fits.
+const margin = 18;
 const map = new maplibregl.Map({
   container: "map",
   style,
@@ -44,17 +57,23 @@ const map = new maplibregl.Map({
   zoom: catalog.region.zoom.initial,
   minZoom: catalog.region.zoom.min,
   maxZoom: catalog.region.zoom.max,
-  maxBounds: [[west, south], [east, north]],
+  maxBounds: [[west - margin, south - margin], [east + margin, north + margin]],
   hash: true,
   attributionControl: false,
-  cooperativeGestures: true
+  // The map is the whole page, so gestures belong to it. Cooperative gestures are for
+  // maps embedded in scrollable documents; on a phone they swallow one-finger panning.
+  cooperativeGestures: false
 });
+let compass: CompassController | undefined;
+let locate: LocateController | undefined;
 
 Object.assign(window, {map});
 
-map.addControl(new maplibregl.NavigationControl({showCompass: false}), "bottom-right");
 map.addControl(new maplibregl.ScaleControl({unit: "metric"}), "bottom-left");
 map.addControl(new maplibregl.AttributionControl({compact: true}), "bottom-right");
+
+document.querySelector<HTMLButtonElement>("#zoom-in")!.addEventListener("click", () => map.zoomIn());
+document.querySelector<HTMLButtonElement>("#zoom-out")!.addEventListener("click", () => map.zoomOut());
 
 const zoomLabel = document.querySelector<HTMLElement>("#zoom-label")!;
 const rendererOptions = document.querySelector<HTMLElement>("#renderer-options")!;
@@ -90,9 +109,12 @@ rendererOptions.addEventListener("change", (event) => {
   window.location.assign(`${window.location.pathname}?${params}${window.location.hash}`);
 });
 
-map.on("zoom", () => {
+function showZoom() {
   zoomLabel.textContent = `z ${map.getZoom().toFixed(1)}`;
-});
+}
+
+showZoom();
+map.on("zoom", showZoom);
 
 map.on("error", (event: ErrorEvent) => {
   const message = event.error?.message ?? "A map source failed to load.";
@@ -100,12 +122,19 @@ map.on("error", (event: ErrorEvent) => {
   error.hidden = false;
 });
 
-map.once("load", () => {
+map.once("style.load", () => {
   document.body.classList.add("map-ready");
-  if (renderer.status === "ready") setupNavigation(map);
+  compass = setupCompass(map, style);
+  locate = setupLocate(map);
+  if (renderer.status === "ready") {
+    const navigation = setupNavigation(map, compass);
+    setupSearch(map, navigation);
+  }
 });
 
 window.addEventListener("beforeunload", () => {
+  locate?.stop();
+  compass?.remove();
   map.remove();
   maplibregl.removeProtocol("pmtiles");
 });

@@ -11,7 +11,7 @@ export function rdrStyle(catalog: ReleaseCatalog): StyleSpecification {
   const layers = base.layers
     .filter((layer) => !["open-ground", "urban-ground", "grass", "wood", "wetland"].includes(layer.id))
     .map(frontierLayer);
-  layers.splice(1, 0, {
+  layers.splice(layers.findIndex((layer) => layer.id === "land") + 1, 0, {
     id: "rdr-terrain",
     type: "raster",
     source: "rdr-terrain",
@@ -29,7 +29,9 @@ export function rdrStyle(catalog: ReleaseCatalog): StyleSpecification {
 }
 
 function frontierLayer(layer: LayerSpecification): LayerSpecification {
-  if (layer.id === "land" && layer.type === "background") return {...layer, paint: {"background-color": "#cdb07b"}};
+  if (layer.id === "sea" && layer.type === "background") return {...layer, paint: {"background-color": "#b09a72"}};
+  if (layer.id === "land" && layer.type === "fill") return {...layer, paint: {"fill-color": "#cdb07b"}};
+  if (layer.id === "coastline" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "#4a3a26", "line-opacity": 0.8}};
   if (layer.id === "water" && layer.type === "fill") return {...layer, paint: {"fill-color": "rgba(111, 117, 105, 0.52)", "fill-outline-color": "#666756"}};
   if (layer.id === "waterways" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "#626554"}};
   if (layer.id === "minor-roads-casing" && layer.type === "line") return {...layer, paint: {...layer.paint, "line-color": "rgba(205,176,123,0.7)", "line-width": ["interpolate", ["exponential", 1.35], ["zoom"], 11, 1.5, 16, 5]}};

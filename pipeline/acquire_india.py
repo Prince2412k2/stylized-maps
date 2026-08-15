@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import math
@@ -115,6 +116,7 @@ def main() -> None:
     parser.add_argument("--bounds", nargs=4, type=float, required=True)
     parser.add_argument("--boundary", type=pathlib.Path, required=True)
     parser.add_argument("--min-free-gib", type=float, default=5)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     lock = json.loads(args.lock.read_text(encoding="utf-8"))["sources"]
     west, south, east, north = args.bounds
@@ -158,16 +160,22 @@ def main() -> None:
             url = glyphs["urlTemplate"].format(font=encoded_font, range=glyph_range)
             tasks.append((url, args.root / "sources/glyphs" / font / f"{glyph_range}.pbf", None, False))
 
-    inventory = []
-    for completed, (url, path, expected, optional) in enumerate(tasks, 1):
+    def acquire(task: tuple[str, pathlib.Path, tuple[str, str] | None, bool]) -> dict[str, str | bool]:
+        url, path, expected, optional = task
         if shutil.disk_usage(args.root).free < args.min_free_gib * 1024**3:
             raise RuntimeError(f"download stopped before exhausting disk: less than {args.min_free_gib:g} GiB free")
         present = download(url, path, expected, optional)
-        inventory.append({"url": url, "path": str(path.relative_to(args.root)), "present": present})
-        print(f"PROGRESS {completed} {len(tasks)}", flush=True)
+        return {"url": url, "path": str(path.relative_to(args.root)), "present": present}
+
+    inventory: list[dict[str, str | bool] | None] = [None] * len(tasks)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(acquire, task): index for index, task in enumerate(tasks)}
+        for completed, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            inventory[futures[future]] = future.result()
+            print(f"PROGRESS {completed} {len(tasks)}", flush=True)
     inventory_path = args.root / "sources/inventory.json"
     inventory_path.parent.mkdir(parents=True, exist_ok=True)
-    inventory_path.write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
+    inventory_path.write_text(json.dumps([entry for entry in inventory if entry is not None], indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
